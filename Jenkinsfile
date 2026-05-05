@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        REGISTRY    = "docker.io"
+        REGISTRY    = "ghcr.io"
         IMAGE_NAME  = "dhanraj2525/my-service"
         COMMIT_HASH = "${env.GIT_COMMIT[0..7]}"
         FULL_IMAGE  = "${REGISTRY}/${IMAGE_NAME}:${COMMIT_HASH}"
@@ -11,7 +11,7 @@ pipeline {
     stages {
 
         // ─────────────────────────────────────────────────
-        // STAGE 1: Just clone the repo and check files
+        // STAGE 1: Clone the repo and check files
         // ─────────────────────────────────────────────────
         stage('Checkout') {
             steps {
@@ -27,12 +27,16 @@ pipeline {
 
         // ─────────────────────────────────────────────────
         // STAGE 2: Build Docker image
+        // Tag = commit hash only — never latest
         // ─────────────────────────────────────────────────
         stage('Build Image') {
             steps {
                 sh '''
                     echo "Building image: ${FULL_IMAGE}"
-                    docker build -t ${FULL_IMAGE} .
+                    docker build \
+                        --build-arg COMMIT_HASH=${COMMIT_HASH} \
+                        --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                        -t ${FULL_IMAGE} .
                     echo "Build successful"
                     docker images | grep dhanraj2525
                 '''
@@ -40,7 +44,7 @@ pipeline {
         }
 
         // ─────────────────────────────────────────────────
-        // STAGE 3: Push image to DockerHub
+        // STAGE 3: Push image to GitHub Container Registry
         // ─────────────────────────────────────────────────
         stage('Push Image') {
             steps {
@@ -50,13 +54,15 @@ pipeline {
                     passwordVariable: 'REG_PASS'
                 )]) {
                     sh '''
-                        echo "Logging into DockerHub..."
-                        echo $REG_PASS | docker login -u $REG_USER --password-stdin
+                        echo "Logging into GitHub Container Registry..."
+                        echo $REG_PASS | docker login ghcr.io \
+                            -u $REG_USER --password-stdin
 
                         echo "Pushing: ${FULL_IMAGE}"
                         docker push ${FULL_IMAGE}
 
-                        echo "Push successful"
+                        echo "Successfully pushed to GHCR"
+                        echo "Image: ${FULL_IMAGE}"
                     '''
                 }
             }
@@ -66,13 +72,14 @@ pipeline {
     post {
         always {
             sh 'docker rmi ${FULL_IMAGE} || true'
-            echo "Done"
+            echo "Pipeline finished"
         }
         success {
-            echo "SUCCESS — Image pushed: ${env.FULL_IMAGE}"
+            echo "SUCCESS — Image available at: ${env.FULL_IMAGE}"
+            echo "View at: https://github.com/dhanraj2525?tab=packages"
         }
         failure {
-            echo "FAILED — Check the stage that turned red"
+            echo "FAILED — Check the red stage above for error details"
         }
     }
 }
