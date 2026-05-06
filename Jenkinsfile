@@ -16,9 +16,9 @@ pipeline {
         // ─────────────────────────────────────────────────
         // STAGE 1: Decide environment based on branch/tag
         //
-        // dev branch  → update values-dev.yaml     → deploy DEV
-        // main branch → update values-staging.yaml → deploy STAGING
-        // tag v*.*.*  → build + push ONLY          → NO deploy
+        // dev branch  → update values-dev.yaml     → ArgoCD auto deploys DEV
+        // main branch → update values-staging.yaml → ArgoCD auto deploys STAGING
+        // tag *.*.*   → update values-prod.yaml    → ArgoCD waits for manual sync
         // other       → skip pipeline
         // ─────────────────────────────────────────────────
         stage('Resolve Environment') {
@@ -35,32 +35,39 @@ pipeline {
 
                     def isMain = branch ==~ /.*main$/
                     def isDev  = branch ==~ /.*dev$/
-                    def isTag  = tag    ==~ /^v\d+\.\d+\.\d+$/
+
+                    // matches both 1.0.0 and v1.0.0
+                    def isTag  = tag    ==~ /^v?\d+\.\d+\.\d+$/
 
                     if (isDev) {
-                        // dev branch → deploy to DEV namespace
-                        env.DEPLOY_ENV    = 'dev'
-                        env.VALUES_FILE   = "${CHART_PATH}/values-dev.yaml"
-                        env.ARGOCD_APP    = 'my-service-dev'
-                        env.TRIGGER       = "branch:dev"
-                        env.SHOULD_DEPLOY = "true"
+                        // dev branch → update values-dev.yaml
+                        // ArgoCD auto syncs to dev namespace
+                        env.DEPLOY_ENV      = 'dev'
+                        env.VALUES_FILE     = "${CHART_PATH}/values-dev.yaml"
+                        env.ARGOCD_APP      = 'my-service-dev'
+                        env.TRIGGER         = "branch:dev"
+                        env.SHOULD_DEPLOY   = "true"
+                        env.IMAGE_TAG_VALUE = "${COMMIT_HASH}"
 
                     } else if (isMain) {
-                        // main branch → deploy to STAGING namespace
-                        env.DEPLOY_ENV    = 'staging'
-                        env.VALUES_FILE   = "${CHART_PATH}/values-staging.yaml"
-                        env.ARGOCD_APP    = 'my-service-staging'
-                        env.TRIGGER       = "branch:main"
-                        env.SHOULD_DEPLOY = "true"
+                        // main branch → update values-staging.yaml
+                        // ArgoCD auto syncs to staging namespace
+                        env.DEPLOY_ENV      = 'staging'
+                        env.VALUES_FILE     = "${CHART_PATH}/values-staging.yaml"
+                        env.ARGOCD_APP      = 'my-service-staging'
+                        env.TRIGGER         = "branch:main"
+                        env.SHOULD_DEPLOY   = "true"
+                        env.IMAGE_TAG_VALUE = "${COMMIT_HASH}"
 
                     } else if (isTag) {
-                        // tag → build + push image only
-                        // image tag will be set in values-prod.yaml manually via ArgoCD
-                        env.DEPLOY_ENV    = 'production'
-                        env.VALUES_FILE   = "${CHART_PATH}/values-prod.yaml"
-                        env.ARGOCD_APP    = 'my-service-prod'
-                        env.TRIGGER       = "tag:${tag}"
-                        env.SHOULD_DEPLOY = "false"
+                        // tag → update values-prod.yaml with tag value
+                        // ArgoCD detects change but waits for manual sync
+                        env.DEPLOY_ENV      = 'production'
+                        env.VALUES_FILE     = "${CHART_PATH}/values-prod.yaml"
+                        env.ARGOCD_APP      = 'my-service-prod'
+                        env.TRIGGER         = "tag:${tag}"
+                        env.SHOULD_DEPLOY   = "false"
+                        env.IMAGE_TAG_VALUE = "${COMMIT_HASH}"
 
                     } else {
                         echo "Branch '${branch}' has no deploy target. Skipping."
@@ -70,8 +77,9 @@ pipeline {
 
                     echo "=============================="
                     echo " Deploy Env   : ${env.DEPLOY_ENV}"
-                    echo " Should Deploy: ${env.SHOULD_DEPLOY}"
                     echo " Values File  : ${env.VALUES_FILE}"
+                    echo " Image Tag    : ${env.IMAGE_TAG_VALUE}"
+                    echo " Auto Deploy  : ${env.SHOULD_DEPLOY}"
                     echo " Trigger      : ${env.TRIGGER}"
                     echo "=============================="
                 }
@@ -141,16 +149,14 @@ pipeline {
         // ─────────────────────────────────────────────────
         // STAGE 5: Update image.tag in GitOps repo
         //
-        // dev branch  → updates values-dev.yaml
-        // main branch → updates values-staging.yaml
-        // tag         → SKIPPED (manual deploy via ArgoCD)
+        // dev branch  → writes commit hash to values-dev.yaml
+        // main branch → writes commit hash to values-staging.yaml
+        // tag         → writes commit hash to values-prod.yaml
         //
-        // ArgoCD detects the git change and auto deploys
+        // ALL three update the file and push to GitOps repo
+        // ArgoCD detects the git change automatically
         // ─────────────────────────────────────────────────
         stage('Update Helm Values') {
-            when {
-                expression { return env.SHOULD_DEPLOY == "true" }
-            }
             steps {
                 sshagent(credentials: ['github-repo']) {
                     sh '''
@@ -164,42 +170,47 @@ pipeline {
 
                         # Read current tag before update
                         OLD_TAG=$(yq e '.image.tag' ${VALUES_FILE})
-                        echo "Old tag : ${OLD_TAG}"
-                        echo "New tag : ${COMMIT_HASH}"
-                        echo "File    : ${VALUES_FILE}"
+                        echo "Old tag    : ${OLD_TAG}"
+                        echo "New tag    : ${IMAGE_TAG_VALUE}"
+                        echo "Updating   : ${VALUES_FILE}"
 
-                        # Update ONLY image.tag with new commit hash
-                        yq e ".image.tag = \\"${COMMIT_HASH}\\"" -i ${VALUES_FILE}
+                        # Update image.tag with new commit hash
+                        yq e ".image.tag = \\"${IMAGE_TAG_VALUE}\\"" -i ${VALUES_FILE}
 
                         # Show what changed
                         echo "--- Git diff ---"
                         git diff ${VALUES_FILE}
 
-                        # Commit and push
+                        # Commit and push to GitOps repo
                         # [skip ci] prevents Jenkins re-triggering on this commit
                         git config user.email "jenkins@ci.internal"
                         git config user.name  "Jenkins CI"
                         git add ${VALUES_FILE}
-                        git commit -m "ci(${DEPLOY_ENV}): ${OLD_TAG} -> ${COMMIT_HASH} [skip ci]"
+                        git commit -m "ci(${DEPLOY_ENV}): ${OLD_TAG} -> ${IMAGE_TAG_VALUE} [skip ci]
+
+Trigger : ${TRIGGER}
+Image   : ${FULL_IMAGE}
+Build   : #${BUILD_NUMBER}"
 
                         GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
                         git push origin main
 
                         cd .. && rm -rf gitops-tmp
 
-                        echo "GitOps repo updated."
-                        echo "ArgoCD will now auto-sync ${ARGOCD_APP}."
+                        echo "GitOps repo updated successfully."
+                        echo "File    : ${VALUES_FILE}"
+                        echo "New tag : ${IMAGE_TAG_VALUE}"
                     '''
                 }
             }
         }
 
         // ─────────────────────────────────────────────────
-        // STAGE 6: Wait for ArgoCD to confirm deployment
+        // STAGE 6: Verify ArgoCD deployment
         //
-        // dev branch  → waits for my-service-dev
-        // main branch → waits for my-service-staging
-        // tag         → SKIPPED
+        // dev branch  → waits for my-service-dev sync
+        // main branch → waits for my-service-staging sync
+        // tag         → SKIPPED (production needs manual sync)
         // ─────────────────────────────────────────────────
         stage('Verify Deployment') {
             when {
@@ -222,7 +233,7 @@ pipeline {
                             --insecure
 
                         echo "Deployment verified: ${ARGOCD_APP}"
-                        echo "Running image: ${FULL_IMAGE}"
+                        echo "Running image      : ${FULL_IMAGE}"
                     '''
                 }
             }
@@ -231,24 +242,20 @@ pipeline {
 
     post {
         always {
-            // Always clean up local docker image to save disk space
             sh 'docker rmi ${FULL_IMAGE} || true'
             echo "Pipeline finished"
         }
         success {
             script {
                 if (env.SHOULD_DEPLOY == "true") {
-                    echo "SUCCESS — Deployed to ${env.DEPLOY_ENV}"
-                    echo "Image  : ${env.FULL_IMAGE}"
-                    echo "ArgoCD : http://${env.ARGOCD_SERVER}"
+                    echo "SUCCESS — Auto deployed to ${env.DEPLOY_ENV}"
+                    echo "Image   : ${env.FULL_IMAGE}"
+                    echo "ArgoCD  : http://${env.ARGOCD_SERVER}"
                 } else {
-                    echo "SUCCESS — Tag build complete"
-                    echo "Image pushed : ${env.FULL_IMAGE}"
-                    echo "To deploy to production:"
-                    echo "  1. Go to ArgoCD → http://${env.ARGOCD_SERVER}"
-                    echo "  2. Open my-service-prod"
-                    echo "  3. Update image.tag to ${env.COMMIT_HASH}"
-                    echo "  4. Click Sync"
+                    echo "SUCCESS — values-prod.yaml updated with ${env.IMAGE_TAG_VALUE}"
+                    echo "Image pushed  : ${env.FULL_IMAGE}"
+                    echo "Next step     : Go to ArgoCD and manually sync my-service-prod"
+                    echo "ArgoCD URL    : http://${env.ARGOCD_SERVER}"
                 }
             }
         }
