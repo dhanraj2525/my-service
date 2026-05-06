@@ -4,8 +4,10 @@ pipeline {
     environment {
         REGISTRY      = "ghcr.io"
         IMAGE_NAME    = "dhanraj2525/my-service"
+        // ── Build number + commit hash = always unique ──
         COMMIT_HASH   = "${env.GIT_COMMIT[0..7]}"
-        FULL_IMAGE    = "${REGISTRY}/${IMAGE_NAME}:${COMMIT_HASH}"
+        IMAGE_TAG     = "${env.BUILD_NUMBER}-${env.GIT_COMMIT[0..7]}"
+        FULL_IMAGE    = "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
         GITOPS_REPO   = "git@github.com:dhanraj2525/k8s-gitops-repo.git"
         CHART_PATH    = "charts/my-service"
         ARGOCD_SERVER = "10.184.34.6:31929"
@@ -18,7 +20,7 @@ pipeline {
         //
         // dev branch  → update values-dev.yaml     → ArgoCD auto deploys DEV
         // main branch → update values-staging.yaml → ArgoCD auto deploys STAGING
-        // tag *.*.*   → update values-prod.yaml    → ArgoCD waits for manual sync
+        // tag *.*.*   → update values-prod.yaml    → ArgoCD manual sync PROD
         // other       → skip pipeline
         // ─────────────────────────────────────────────────
         stage('Resolve Environment') {
@@ -28,9 +30,11 @@ pipeline {
                     def tag    = env.TAG_NAME    ?: ''
 
                     echo "=============================="
-                    echo " Branch : ${branch}"
-                    echo " Tag    : ${tag}"
-                    echo " Commit : ${COMMIT_HASH}"
+                    echo " Branch    : ${branch}"
+                    echo " Tag       : ${tag}"
+                    echo " Commit    : ${COMMIT_HASH}"
+                    echo " Build No  : ${BUILD_NUMBER}"
+                    echo " Image Tag : ${IMAGE_TAG}"
                     echo "=============================="
 
                     def isMain = branch ==~ /.*main$/
@@ -40,34 +44,25 @@ pipeline {
                     def isTag  = tag    ==~ /^v?\d+\.\d+\.\d+$/
 
                     if (isDev) {
-                        // dev branch → update values-dev.yaml
-                        // ArgoCD auto syncs to dev namespace
                         env.DEPLOY_ENV      = 'dev'
                         env.VALUES_FILE     = "${CHART_PATH}/values-dev.yaml"
                         env.ARGOCD_APP      = 'my-service-dev'
                         env.TRIGGER         = "branch:dev"
                         env.SHOULD_DEPLOY   = "true"
-                        env.IMAGE_TAG_VALUE = "${COMMIT_HASH}"
 
                     } else if (isMain) {
-                        // main branch → update values-staging.yaml
-                        // ArgoCD auto syncs to staging namespace
                         env.DEPLOY_ENV      = 'staging'
                         env.VALUES_FILE     = "${CHART_PATH}/values-staging.yaml"
                         env.ARGOCD_APP      = 'my-service-staging'
                         env.TRIGGER         = "branch:main"
                         env.SHOULD_DEPLOY   = "true"
-                        env.IMAGE_TAG_VALUE = "${COMMIT_HASH}"
 
                     } else if (isTag) {
-                        // tag → update values-prod.yaml with tag value
-                        // ArgoCD detects change but waits for manual sync
                         env.DEPLOY_ENV      = 'production'
                         env.VALUES_FILE     = "${CHART_PATH}/values-prod.yaml"
                         env.ARGOCD_APP      = 'my-service-prod'
                         env.TRIGGER         = "tag:${tag}"
                         env.SHOULD_DEPLOY   = "false"
-                        env.IMAGE_TAG_VALUE = "${COMMIT_HASH}"
 
                     } else {
                         echo "Branch '${branch}' has no deploy target. Skipping."
@@ -76,11 +71,11 @@ pipeline {
                     }
 
                     echo "=============================="
-                    echo " Deploy Env   : ${env.DEPLOY_ENV}"
-                    echo " Values File  : ${env.VALUES_FILE}"
-                    echo " Image Tag    : ${env.IMAGE_TAG_VALUE}"
-                    echo " Auto Deploy  : ${env.SHOULD_DEPLOY}"
-                    echo " Trigger      : ${env.TRIGGER}"
+                    echo " Deploy Env  : ${env.DEPLOY_ENV}"
+                    echo " Values File : ${env.VALUES_FILE}"
+                    echo " Image Tag   : ${IMAGE_TAG}"
+                    echo " Auto Deploy : ${env.SHOULD_DEPLOY}"
+                    echo " Trigger     : ${env.TRIGGER}"
                     echo "=============================="
                 }
             }
@@ -95,15 +90,16 @@ pipeline {
                 sh '''
                     echo "Repo cloned successfully"
                     ls -la
-                    echo "Commit hash: ${COMMIT_HASH}"
+                    echo "Image tag: ${IMAGE_TAG}"
                 '''
             }
         }
 
         // ─────────────────────────────────────────────────
         // STAGE 3: Build Docker image
-        // Runs for ALL branches and tags
-        // Tag = commit hash only — never latest
+        // Tag format: <build_number>-<commit_hash>
+        // Example   : 12-6abdd88f
+        // Always unique — even on same commit
         // ─────────────────────────────────────────────────
         stage('Build Image') {
             steps {
@@ -149,12 +145,13 @@ pipeline {
         // ─────────────────────────────────────────────────
         // STAGE 5: Update image.tag in GitOps repo
         //
-        // dev branch  → writes commit hash to values-dev.yaml
-        // main branch → writes commit hash to values-staging.yaml
-        // tag         → writes commit hash to values-prod.yaml
+        // dev branch  → writes to values-dev.yaml
+        // main branch → writes to values-staging.yaml
+        // tag         → writes to values-prod.yaml
         //
-        // ALL three update the file and push to GitOps repo
-        // ArgoCD detects the git change automatically
+        // Fix: if tag is same → still commits because
+        //      IMAGE_TAG = build_number + commit_hash
+        //      so it is ALWAYS different every build
         // ─────────────────────────────────────────────────
         stage('Update Helm Values') {
             steps {
@@ -170,36 +167,38 @@ pipeline {
 
                         # Read current tag before update
                         OLD_TAG=$(yq e '.image.tag' ${VALUES_FILE})
-                        echo "Old tag    : ${OLD_TAG}"
-                        echo "New tag    : ${IMAGE_TAG_VALUE}"
-                        echo "Updating   : ${VALUES_FILE}"
+                        echo "Old tag  : ${OLD_TAG}"
+                        echo "New tag  : ${IMAGE_TAG}"
+                        echo "File     : ${VALUES_FILE}"
 
-                        # Update image.tag with new commit hash
-                        yq e ".image.tag = \\"${IMAGE_TAG_VALUE}\\"" -i ${VALUES_FILE}
+                        # Update image.tag with build_number-commit_hash
+                        yq e ".image.tag = \\"${IMAGE_TAG}\\"" -i ${VALUES_FILE}
 
                         # Show what changed
                         echo "--- Git diff ---"
                         git diff ${VALUES_FILE}
 
-                        # Commit and push to GitOps repo
-                        # [skip ci] prevents Jenkins re-triggering on this commit
+                        # Commit and push
                         git config user.email "jenkins@ci.internal"
                         git config user.name  "Jenkins CI"
                         git add ${VALUES_FILE}
-                        git commit -m "ci(${DEPLOY_ENV}): ${OLD_TAG} -> ${IMAGE_TAG_VALUE} [skip ci]
 
-Trigger : ${TRIGGER}
-Image   : ${FULL_IMAGE}
-Build   : #${BUILD_NUMBER}"
+                        # [skip ci] prevents Jenkins re-triggering on this commit
+                        git commit -m "ci(${DEPLOY_ENV}): ${OLD_TAG} -> ${IMAGE_TAG} [skip ci]
+
+Trigger  : ${TRIGGER}
+Image    : ${FULL_IMAGE}
+Build    : #${BUILD_NUMBER}
+Commit   : ${COMMIT_HASH}"
 
                         GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" \
                         git push origin main
 
                         cd .. && rm -rf gitops-tmp
 
-                        echo "GitOps repo updated successfully."
+                        echo "GitOps repo updated."
                         echo "File    : ${VALUES_FILE}"
-                        echo "New tag : ${IMAGE_TAG_VALUE}"
+                        echo "New tag : ${IMAGE_TAG}"
                     '''
                 }
             }
@@ -208,9 +207,9 @@ Build   : #${BUILD_NUMBER}"
         // ─────────────────────────────────────────────────
         // STAGE 6: Verify ArgoCD deployment
         //
-        // dev branch  → waits for my-service-dev sync
-        // main branch → waits for my-service-staging sync
-        // tag         → SKIPPED (production needs manual sync)
+        // dev branch  → waits for my-service-dev
+        // main branch → waits for my-service-staging
+        // tag         → SKIPPED (manual sync in ArgoCD)
         // ─────────────────────────────────────────────────
         stage('Verify Deployment') {
             when {
@@ -232,8 +231,8 @@ Build   : #${BUILD_NUMBER}"
                             --timeout     300 \
                             --insecure
 
-                        echo "Deployment verified: ${ARGOCD_APP}"
-                        echo "Running image      : ${FULL_IMAGE}"
+                        echo "Deployment verified : ${ARGOCD_APP}"
+                        echo "Running image       : ${FULL_IMAGE}"
                     '''
                 }
             }
@@ -252,10 +251,11 @@ Build   : #${BUILD_NUMBER}"
                     echo "Image   : ${env.FULL_IMAGE}"
                     echo "ArgoCD  : http://${env.ARGOCD_SERVER}"
                 } else {
-                    echo "SUCCESS — values-prod.yaml updated with ${env.IMAGE_TAG_VALUE}"
-                    echo "Image pushed  : ${env.FULL_IMAGE}"
-                    echo "Next step     : Go to ArgoCD and manually sync my-service-prod"
-                    echo "ArgoCD URL    : http://${env.ARGOCD_SERVER}"
+                    echo "SUCCESS — values-prod.yaml updated"
+                    echo "Image   : ${env.FULL_IMAGE}"
+                    echo "Tag     : ${env.IMAGE_TAG}"
+                    echo "Go to ArgoCD → my-service-prod → Sync manually"
+                    echo "ArgoCD  : http://${env.ARGOCD_SERVER}"
                 }
             }
         }
