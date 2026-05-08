@@ -6,7 +6,6 @@ pipeline {
         IMAGE_NAME    = "dhanraj2525/my-service"
         IMAGE_TAG     = "${env.BUILD_NUMBER}"
         FULL_IMAGE    = "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-        KUBECONFIG    = "/home/jenkins/.kube/config"
         NAMESPACE     = "dev"
     }
 
@@ -67,35 +66,37 @@ pipeline {
 
         stage('Deploy with Helm') {
             steps {
-                sh '''
-                    echo "=============================="
-                    echo "Deploying service with Helm"
-                    echo "=============================="
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        echo "=============================="
+                        echo "Deploying service with Helm"
+                        echo "=============================="
 
-                    helm repo add stable https://charts.helm.sh/stable || true
-                    helm repo update
+                        helm repo add stable https://charts.helm.sh/stable || true
+                        helm repo update
 
-                    # Deploy/Upgrade using helm with direct image override
-                    if helm list -n ${NAMESPACE} | grep -q my-service; then
-                        echo "Upgrading existing release..."
-                        helm upgrade my-service ./. \
-                            --namespace ${NAMESPACE} \
-                            --values values.yaml \
-                            --set image.repository="${FULL_IMAGE}"
-                    else
-                        echo "Creating new release..."
-                        helm install my-service ./. \
-                            --namespace ${NAMESPACE} \
-                            --create-namespace \
-                            --values values.yaml \
-                            --set image.repository="${FULL_IMAGE}"
-                    fi
+                        # Deploy/Upgrade using helm with direct image override
+                        if helm list -n ${NAMESPACE} | grep -q my-service; then
+                            echo "Upgrading existing release..."
+                            helm upgrade my-service ./. \
+                                --namespace ${NAMESPACE} \
+                                --values values.yaml \
+                                --set image.repository="${FULL_IMAGE}"
+                        else
+                            echo "Creating new release..."
+                            helm install my-service ./. \
+                                --namespace ${NAMESPACE} \
+                                --create-namespace \
+                                --values values.yaml \
+                                --set image.repository="${FULL_IMAGE}"
+                        fi
 
-                    echo "=============================="
-                    echo "Deployment completed!"
-                    echo "=============================="
-                    echo "Deployed image: ${FULL_IMAGE}"
-                '''
+                        echo "=============================="
+                        echo "Deployment completed!"
+                        echo "=============================="
+                        echo "Deployed image: ${FULL_IMAGE}"
+                    '''
+                }
             }
         }
     }
