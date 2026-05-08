@@ -86,7 +86,6 @@ pipeline {
                             echo "Creating new release..."
                             helm install my-service ./. \
                                 --namespace ${NAMESPACE} \
-                                --create-namespace \
                                 --values values.yaml \
                                 --set image.tag="${BUILD_NUMBER}"
                         fi
