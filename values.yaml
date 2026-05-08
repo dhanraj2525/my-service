@@ -1,6 +1,6 @@
 replicaCount: 1
 image:
-  repository: ghcr.io/dhanraj2525/my-service
+  # repository: ghcr.io/dhanraj2525/my-service
   pullPolicy: IfNotPresent
 
 nameOverride: ''
