@@ -3,6 +3,7 @@ pipeline {
 
     environment {
         REGISTRY      = "ghcr.io"
+        IMAGE_NAME    = "dhanraj2525/my-service"
         IMAGE_TAG     = "${env.BUILD_NUMBER}"
         FULL_IMAGE    = "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
         KUBECONFIG    = "/home/jenkins/.kube/config"
