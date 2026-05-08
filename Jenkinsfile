@@ -81,14 +81,14 @@ pipeline {
                             helm upgrade my-service ./. \
                                 --namespace ${NAMESPACE} \
                                 --values values.yaml \
-                                --set image.repository.tag="${BUILD_NUMBER}"
+                                --set image.tag="${BUILD_NUMBER}"
                         else
                             echo "Creating new release..."
                             helm install my-service ./. \
                                 --namespace ${NAMESPACE} \
                                 --create-namespace \
                                 --values values.yaml \
-                                --set image.repository.tag="${BUILD_NUMBER}"
+                                --set image.tag="${BUILD_NUMBER}"
                         fi
 
                         echo "=============================="
