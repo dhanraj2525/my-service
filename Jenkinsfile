@@ -93,7 +93,7 @@ pipeline {
                     sshagent(credentials: ["${GIT_CREDENTIALS_ID}"]) {
 
                         sh """
-                            git config user.email "jenkins@sarvika.com"
+                            git config user.email "jenkins@gmail.com"
                             git config user.name "jenkins"
 
                             git add ${CHART_PATH}/values.yaml
