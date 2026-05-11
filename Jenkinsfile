@@ -46,7 +46,7 @@ pipeline {
                     passwordVariable: 'GH_TOKEN'
                 )]) {
 
-                    sh """
+                    sh """ 
                         echo \$GH_TOKEN | docker login ghcr.io -u \$GH_USER --password-stdin
 
                         docker push ${IMAGE_NAME}:${IMAGE_TAG}
